@@ -80,15 +80,23 @@ class PipelineRunner(QtCore.QObject):
     stopped = QtCore.Signal()
 
     def __init__(self, scene, executor: GraphExecutor,
-                 device: int = 0, parent=None):
+                 source: int = 0, parent=None):
         super().__init__(parent)
         self.scene = scene
         self.executor = executor
-        self.device = device
+        self.source = source
         self.cap: Optional[cv2.VideoCapture] = None
         self.ctx = ExecutionContext()
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._tick)
+
+    def set_source(self, source):
+        was = self.running
+        if was:
+            self.stop()
+        self.source = source
+        if was:
+            self.start()
 
     @property
     def running(self) -> bool:
@@ -97,13 +105,13 @@ class PipelineRunner(QtCore.QObject):
     def start(self, fps: int = 30) -> bool:
         if self.running:
             return True
-        cap = cv2.VideoCapture(self.device)
+        cap = cv2.VideoCapture(self.source)
         if not cap or not cap.isOpened():
             if cap:
                 cap.release()
             self.error.emit(
-                f"Could not open webcam (device {self.device}). "
-                "Check it isn't in use by another app.")
+                f"Could not open source ({self.source}). "
+                "Check the webcam isn't in use, or that the video path exists.")
             return False
         self.cap = cap
         self.ctx.frame_index = 0
@@ -123,7 +131,11 @@ class PipelineRunner(QtCore.QObject):
             return
         ok, frame = self.cap.read()
         if not ok:
-            return
+            if isinstance(self.source, str):          # <-- add block
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ok, frame = self.cap.read()
+            if not ok:
+                return
         self.ctx.frame = frame
         self.ctx.frame_index += 1
         self.executor.step(self.scene, self.ctx)

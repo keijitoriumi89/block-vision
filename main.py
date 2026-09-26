@@ -65,7 +65,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # execution
         self.executor = GraphExecutor()
         self.runner = PipelineRunner(self.scene, self.executor,
-                                     device=WEBCAM_DEVICE)
+                                     source=WEBCAM_DEVICE)
         self.runner.error.connect(self._on_runner_error)
         self.runner.started.connect(
             lambda: self.statusBar().showMessage("Running — webcam live"))
@@ -92,6 +92,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.play_act.setShortcut("Space")
         self.play_act.toggled.connect(self._toggle_play)
         tb.addAction(self.play_act)
+        tb.addAction("Open Video…", self._open_video)
+        tb.addAction("Use Webcam", self._use_webcam)
 
         tb.addSeparator()
         tb.addAction("Fit View", self._fit_view)
@@ -101,7 +103,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _toggle_play(self, on: bool):
         if on:
             if self.runner.start():
-                self.play_act.setText("⏹  Stop")
+                self.play_act.setText("Stop")
             else:
                 self.play_act.blockSignals(True)
                 self.play_act.setChecked(False)
@@ -119,8 +121,14 @@ class MainWindow(QtWidgets.QMainWindow):
         gray = self.view.add_block("Grayscale", QPointF(-90, -50))
         canny = self.view.add_block("Canny Edges", QPointF(150, -60))
         viewer = self.view.add_block("Viewer", QPointF(410, -40))
+        c_low = self.view.add_block("Constant", QPointF(-120, 150))
+        c_high = self.view.add_block("Constant", QPointF(-120, 230))
+        c_low.params["value"] = 50.0
+        c_high.params["value"] = 150.0
         self.view._make_connection(cam.outputs[0], gray.inputs[0])
         self.view._make_connection(gray.outputs[0], canny.inputs[0])
+        self.view._make_connection(c_low.outputs[0], canny.inputs[1])
+        self.view._make_connection(c_high.outputs[0], canny.inputs[2])
         self.view._make_connection(canny.outputs[0], viewer.inputs[0])
         QtCore.QTimer.singleShot(0, self._fit_view)
 
@@ -136,6 +144,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.scene.clear()
         if was_running:
             self.play_act.setChecked(False)
+
+    def _set_source_and_play(self, source, label):
+        self.runner.set_source(source)          # restarts if already running
+        self.statusBar().showMessage(f"Source: {label}")
+        if not self.play_act.isChecked():
+            self.play_act.setChecked(True)      # triggers start
+
+    def _open_video(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Open Video", "",
+            "Video Files (*.mp4 *.avi *.mov *.mkv);;All Files (*)")
+        if path:
+            self._set_source_and_play(path, path)
+
+    def _use_webcam(self):
+        self._set_source_and_play(WEBCAM_DEVICE, "webcam")
 
     def closeEvent(self, e):
         self.runner.stop()

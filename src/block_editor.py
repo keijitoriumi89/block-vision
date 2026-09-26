@@ -168,6 +168,8 @@ class Node(GItem):
         self.definition = definition
         self.title = title or definition.name
         self.params: dict = {}
+        for opt in definition.options:
+            self.params.setdefault(opt.key, opt.default)
         self.inputs: List[Port] = []
         self.outputs: List[Port] = []
         self.setFlags(_Flag.ItemIsMovable | _Flag.ItemIsSelectable |
@@ -185,8 +187,12 @@ class Node(GItem):
     def _rows(self):
         return max(len(self.inputs), len(self.outputs), 1)
 
+    def _has_info(self):
+        return bool(self.definition.options)
+
     def height(self):
-        return self.TITLE_H + self._rows() * self.ROW_H + self.PAD
+        extra = self.ROW_H if self._has_info() else 0.0
+        return self.TITLE_H + self._rows() * self.ROW_H + extra + self.PAD
 
     def _layout_ports(self):
         y0 = self.TITLE_H + self.ROW_H / 2
@@ -238,6 +244,21 @@ class Node(GItem):
                              Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                              p.name)
 
+        if self._has_info():
+            iy = self.TITLE_H + self._rows() * self.ROW_H + self.ROW_H / 2
+            f.setBold(False)
+            f.setPointSizeF(8.0)
+            painter.setFont(f)
+            painter.setPen(_color("#8a9299"))
+            summary = "  ·  ".join(str(self.params.get(o.key, o.default))
+                                   for o in self.definition.options)
+            fm = QtGui.QFontMetrics(painter.font())
+            summary = fm.elidedText(summary, Qt.TextElideMode.ElideRight,
+                                    int(self.WIDTH - 20))
+            painter.drawText(QRectF(10, iy - 9, self.WIDTH - 20, 18),
+                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter,
+                             summary)
+
         if self.isSelected():
             pen = QtGui.QPen(_color("#ffd54f"))
             pen.setWidthF(2.0)
@@ -272,7 +293,7 @@ class ImageDisplayNode(Node):
         return self.TITLE_H + self._rows() * self.ROW_H + self.PAD + self.DISP_H + self.PAD
 
     def _disp_rect(self):
-        top = self.body_height()
+        top = self.TITLE_H + self._rows() * self.ROW_H + self.PAD
         x = (self.WIDTH - self.DISP_W) / 2
         return QRectF(x, top, self.DISP_W, self.DISP_H)
 
@@ -301,9 +322,37 @@ class ImageDisplayNode(Node):
             painter.setPen(_color("#5a616a"))
             painter.drawText(r, Qt.AlignmentFlag.AlignCenter, "no signal")
 
+class ConstantNode(Node):
+    def __init__(self, definition, title=None):
+        super().__init__(definition, title)
+        self.params.setdefault("value", 0.0)
+
+    def paint(self, painter, option, widget=None):
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        self._paint_body(painter)
+        y = self.TITLE_H + self.ROW_H / 2
+        painter.setPen(_color("#ffd54f"))
+        f = painter.font(); f.setBold(True); f.setPointSizeF(11.0)
+        painter.setFont(f)
+        painter.drawText(QRectF(12, y - 12, self.WIDTH - 24, 24),
+                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                         f"{self.params.get('value', 0.0):g}")
+
+    def mouseDoubleClickEvent(self, event):
+        views = self.scene().views() if self.scene() else []
+        parent = views[0] if views else None
+        cur = float(self.params.get("value", 0.0))
+        val, ok = QtWidgets.QInputDialog.getDouble(
+            parent, "Constant", "Value:", cur, -1e9, 1e9, 4)
+        if ok:
+            self.params["value"] = val
+            self.update()
+
 def make_node(definition: BlockDefinition):
     if definition.display:
         return ImageDisplayNode(definition)
+    if definition.constant:
+        return ConstantNode(definition)
     return Node(definition)
 
 class NodeScene(QtWidgets.QGraphicsScene):
@@ -437,8 +486,47 @@ class NodeEditorView(QtWidgets.QGraphicsView):
                 c.remove()
         self.scene().removeItem(node)
 
+    def _node_at(self, view_pos):
+        for it in self.items(view_pos):
+            if isinstance(it, Node):
+                return it
+        return None
+
+    def _show_node_menu(self, node, global_pos):
+        menu = QtWidgets.QMenu(self)
+        for opt in node.definition.options:
+            sub = menu.addMenu(opt.label)
+            group = QtGui.QActionGroup(sub)
+            group.setExclusive(True)
+            current = node.params.get(opt.key, opt.default)
+            for value, display in opt.choices:
+                act = sub.addAction(display)
+                act.setCheckable(True)
+                act.setChecked(value == current)
+                act.setData(("set", opt.key, value))
+                group.addAction(act)
+        if node.definition.options:
+            menu.addSeparator()
+        act_del = menu.addAction("Delete")
+        act_del.setData(("delete",))
+
+        chosen = menu.exec(global_pos)
+        if chosen is None:
+            return
+        data = chosen.data()
+        if not data:
+            return
+        if data[0] == "delete":
+            self._delete_node(node)
+        elif data[0] == "set":
+            _, key, value = data
+            node.params[key] = value
+            node.update()
+
     def contextMenuEvent(self, e):
-        if self._port_at(e.pos()) is not None:
+        node = self._node_at(e.pos())
+        if node is not None:
+            self._show_node_menu(node, e.globalPos())
             return
         menu = QtWidgets.QMenu(self)
         for category, defs in self.registry.by_category().items():
